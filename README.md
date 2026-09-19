@@ -4,9 +4,9 @@ This is a brief description of a potential improvement of R's
 
 For an upper-triangular Cholesky factor `U` with
 ```
-A = t(u) %*% U
+A = t(U) %*% U
 ```
-the diagonal of `A^-1` is obtained from the squared row names of `U^-1`:
+the diagonal of `A^-1` is obtained from the squared row norms of `U^-1`:
 ```
 diag(A^-1)[i] = sum(Uinv[i, i:n]^2)
 ```
