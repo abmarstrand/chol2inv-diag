@@ -1,0 +1,141 @@
+Index: src/library/base/R/chol.R
+===================================================================
+--- src/library/base/R/chol.R	(revision 90563)
++++ src/library/base/R/chol.R	(working copy)
+@@ -28,9 +28,9 @@
+     .Internal(La_chol(as.matrix(x), pivot, tol))
+ }
+
+-chol2inv <- function(x, size = NCOL(x), LINPACK = FALSE)
++chol2inv <- function(x, size = NCOL(x), LINPACK = FALSE, diag.only = FALSE)
+ {
+     if (!missing(LINPACK))
+         stop("the LINPACK argument has been defunct since R 3.1.0")
+-    .Internal(La_chol2inv(x, size))
++    .Internal(La_chol2inv(x, size, diag.only))
+ }
+Index: src/library/base/man/chol2inv.Rd
+===================================================================
+--- src/library/base/man/chol2inv.Rd	(revision 90563)
++++ src/library/base/man/chol2inv.Rd	(working copy)
+@@ -12,7 +12,7 @@
+   from the (\eqn{R} part) of the QR decomposition of \eqn{X}.
+ }
+ \usage{
+-chol2inv(x, size = NCOL(x), LINPACK = FALSE)
++chol2inv(x, size = NCOL(x), LINPACK = FALSE, diag.only = FALSE)
+ }
+ \arguments{
+   \item{x}{a matrix.  The first \code{size} columns of the upper triangle
+@@ -20,10 +20,11 @@
+   \item{size}{the number of columns of \code{x} containing the
+     Cholesky decomposition.}
+   \item{LINPACK}{logical.  Defunct and gives an error.}
+-
++  \item{diag.only}{logical; return only the diagonal of the inverse.}
+ }
+ \value{
+-  The inverse of the matrix whose Cholesky decomposition was given.
++  The inverse of the matrix whose Cholesky decomposition was given, or a
++  numeric vector containing its diagonal if \code{diag.only = TRUE}.
+
+   Unsuccessful results from the underlying LAPACK code will result in an
+   error giving a positive error code: these can only be interpreted by
+Index: src/main/names.c
+===================================================================
+--- src/main/names.c	(revision 90563)
++++ src/main/names.c	(working copy)
+@@ -1004,7 +1004,7 @@
+ {"La_solve",	do_lapack,	100,	11,	3,	{PP_FUNCALL, PREC_FN,	0}},
+ {"La_qr",	do_lapack,	101,	11,	1,	{PP_FUNCALL, PREC_FN,	0}},
+ {"La_chol",	do_lapack,	200,	11,	3,	{PP_FUNCALL, PREC_FN,	0}},
+-{"La_chol2inv",	do_lapack,	201,	11,	2,	{PP_FUNCALL, PREC_FN,	0}},
++{"La_chol2inv",	do_lapack,	201,	11,	3,	{PP_FUNCALL, PREC_FN,	0}},
+
+ {"qr_coef_real",do_lapack,	300,	11,	2,	{PP_FUNCALL, PREC_FN,	0}},
+ {"qr_qy_real",	do_lapack,	301,	11,	3,	{PP_FUNCALL, PREC_FN,	0}},
+Index: src/modules/lapack/Lapack.c
+===================================================================
+--- src/modules/lapack/Lapack.c	(revision 90563)
++++ src/modules/lapack/Lapack.c	(working copy)
+@@ -1141,9 +1141,12 @@
+     return ans;
+ }
+
+-static SEXP La_chol2inv(SEXP A, SEXP size)
++static SEXP La_chol2inv(SEXP A, SEXP size, SEXP diag_only)
+ {
+     int sz = asInteger(size);
++    int only_diag = asLogical(diag_only);
++    if (only_diag == NA_LOGICAL)
++	error(_("invalid '%s' argument"), "diag.only");
+     if (sz == NA_INTEGER || sz < 1) {
+ 	error(_("'size' argument must be a positive integer"));
+ 	return R_NilValue; /* -Wall */
+@@ -1169,7 +1172,15 @@
+ 		REAL(ans)[i + j * SZ] = REAL(Amat)[i + j * M];
+ 	}
+ 	int info;
+-	F77_CALL(dpotri)("U", &sz, REAL(ans), &sz, &info FCONE);
++	const char *routine;
++	if (only_diag) {
++	    routine = "dtrtri";
++	    F77_CALL(dtrtri)("U", "N", &sz, REAL(ans), &sz, &info
++			     FCONE FCONE);
++	} else {
++	    routine = "dpotri";
++	    F77_CALL(dpotri)("U", &sz, REAL(ans), &sz, &info FCONE);
++	}
+ 	if (info != 0) {
+ 	    UNPROTECT(nprot);
+ 	    if (info > 0)
+@@ -1176,11 +1187,22 @@
+ 		error(_("element (%d, %d) is zero, so the inverse cannot be computed"),
+ 		      info, info);
+ 	    error(_("argument %d of Lapack routine %s had invalid value"),
+-		  -info, "dpotri");
++		  -info, routine);
++	}
++	if (only_diag) {
++	    SEXP d = PROTECT(allocVector(REALSXP, sz)); nprot++;
++	    BLAS_INT inc = (BLAS_INT) sz;
++	    for (int i = 0; i < sz; i++) {
++		BLAS_INT len = (BLAS_INT) (sz - i);
++		const double *x = REAL(ans) + i + SZ * i;
++		REAL(d)[i] = F77_CALL(ddot)(&len, x, &inc, x, &inc);
++	    }
++	    ans = d;
++	} else {
++	    for (int j = 0; j < sz; j++)
++		for (int i = j+1; i < sz; i++)
++		    REAL(ans)[i + j * SZ] = REAL(ans)[j + i * SZ];
+ 	}
+-	for (int j = 0; j < sz; j++)
+-	    for (int i = j+1; i < sz; i++)
+-		REAL(ans)[i + j * SZ] = REAL(ans)[j + i * SZ];
+ 	UNPROTECT(nprot);
+ 	return ans;
+     }
+@@ -1489,7 +1511,7 @@
+     case 101: ans = La_qr(CAR(args)); break;
+
+     case 200: ans = La_chol(CAR(args), CADR(args), CADDR(args)); break;
+-    case 201: ans = La_chol2inv(CAR(args), CADR(args)); break;
++    case 201: ans = La_chol2inv(CAR(args), CADR(args), CADDR(args)); break;
+
+     case 300: ans = qr_coef_real(CAR(args), CADR(args)); break;
+     case 301: ans = qr_qy_real(CAR(args), CADR(args), CADDR(args)); break;
+Index: tests/reg-tests-1a.R
+===================================================================
+--- tests/reg-tests-1a.R	(revision 90563)
++++ tests/reg-tests-1a.R	(working copy)
+@@ -1033,7 +1033,9 @@
+ ## chol2inv
+ cma <- chol(ma	<- cbind(1, 1:3, c(1,3,7)))
+-stopifnot(all.equal(diag(3), ma %*% chol2inv(cma)))
++stopifnot(all.equal(diag(3), ma %*% chol2inv(cma)),
++	  all.equal(chol2inv(cma, diag.only = TRUE),
++		    diag(chol2inv(cma))))
+ ## end of moved from chol2inv.Rd
+
+
