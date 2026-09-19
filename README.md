@@ -1,5 +1,5 @@
 # Diagonal-only inverse from dense Cholesky factors
-This is a brief description of a potential improvement of R'search
+This is a brief description of a potential improvement of R's
 `chol2inv()` when only the diagonal is needed.
 
 For an upper-triangular Cholesky factor `U` with
